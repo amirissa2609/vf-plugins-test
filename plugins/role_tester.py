@@ -1,13 +1,18 @@
 import boto3
 import json
-from urllib.parse import urlparse
 
 def process_scheduled_call(influxdb3_local, call_time, args=None):
 
-    if args and "s3uri" in args:
-        s3_uri = str(args["s3uri"])
+    if args and "s3bucket" in args:
+        s3_bucket = str(args["s3bucket"])
     else:
-        influxdb3_local.info("s3uri not supplied in args")
+        influxdb3_local.info("s3bucket not supplied in args")
+
+    if args and "s3file" in args:
+        s3_file = str(args["s3file"])
+    else:
+        influxdb3_local.info("s3file not supplied in args")
+
 
     if args and "credsfile" in args:
         creds_file = str(args["credsfile"])
@@ -25,13 +30,10 @@ def process_scheduled_call(influxdb3_local, call_time, args=None):
         aws_session_token=creds["aws_session_token"],
     )
 
-    # Parse S3 URI into bucket + key
-    bucket, key = parse_s3_uri(s3_uri)
-
     # Upload empty file
-    s3.put_object(Bucket=bucket, Key=key, Body=b"")
+    s3.put_object(Bucket=s3_bucket, Key=s3_file, Body=b"")
 
-    influxdb3_local.info(f"Uploaded empty file to s3://{bucket}/{key}")
+    influxdb3_local.info(f"Uploaded empty file to s3://{s3_bucket}/{s3_file}")
 
 
 def load_credentials_json(creds_path):
@@ -48,15 +50,4 @@ def load_credentials_json(creds_path):
             influxdb3_local.info(f"Missing required key '{key}' in credentials JSON.")
 
     return data
-
-
-def parse_s3_uri(s3_uri):
-    """Parse an S3 URI like s3://my-bucket/path/to/file.txt."""
-    parsed = urlparse(s3_uri)
-    if parsed.scheme != "s3":
-        raise ValueError("S3 URI must start with s3://")
-
-    bucket = parsed.netloc
-    key = parsed.path.lstrip("/")
-    return bucket, key
 
