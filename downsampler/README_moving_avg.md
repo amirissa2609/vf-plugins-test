@@ -36,7 +36,7 @@ curl -X POST "http://localhost:8181/api/v3/configure/processing_engine_trigger" 
   -d '{
     "db": "sensors",
     "disabled": false,
-    "plugin_filename": "downsampler/downsampler.py",
+    "plugin_filename": "gh:downsampler/downsampler.py",
     "trigger_name": "moving_avg_test_http_trigger",
     "trigger_specification": "request:moving-avg-test",
     "trigger_settings": {
@@ -82,7 +82,7 @@ curl -X POST "http://localhost:8181/api/v3/configure/processing_engine_trigger" 
   -d '{
     "db": "sensors",
     "disabled": false,
-    "plugin_filename": "downsampler/downsampler.py",
+    "plugin_filename": "gh:downsampler/downsampler.py",
     "trigger_name": "moving_avg_test_schedule_trigger",
     "trigger_specification": "every:10s",
     "trigger_arguments": {
