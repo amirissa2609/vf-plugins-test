@@ -900,7 +900,7 @@ def generate_fields_string(
                 partition_parts = [f'"{tag}"' for tag in tags_list]
                 partition_clause = f"PARTITION BY {', '.join(partition_parts)} "
             
-            query += f'\tAVG("{field_name}") OVER ({partition_clause}ORDER BY time ROWS BETWEEN {moving_avg_window - 1} PRECEDING AND CURRENT ROW) as "{field_name}_moving_avg"'
+            query += f'\tAVG(AVG("{field_name}")) OVER ({partition_clause}ORDER BY time RANGE BETWEEN INTERVAL \'{moving_avg_window} seconds\' PRECEDING AND CURRENT ROW) as "{field_name}_moving_avg"'
         else:
             query += f'\t{aggregation}("{field_name}") as "{field_name}_{aggregation}"'
 
@@ -951,7 +951,7 @@ def generate_moving_avg_fields_string(
                 partition_parts = [f'"{tag}"' for tag in tags_list]
                 partition_clause = f"PARTITION BY {', '.join(partition_parts)} "
             
-            query += f'\tAVG("{field_name}") OVER ({partition_clause}ORDER BY time ROWS BETWEEN {moving_avg_window - 1} PRECEDING AND CURRENT ROW) as "{field_name}_moving_avg"'
+            query += f'\tAVG(AVG("{field_name}")) OVER ({partition_clause}ORDER BY time RANGE BETWEEN INTERVAL \'{moving_avg_window} seconds\' PRECEDING AND CURRENT ROW) as "{field_name}_moving_avg"'
         else:
             # For other aggregations in mixed queries, use them as-is (this shouldn't normally happen in pure moving avg queries)
             query += f'\t"{field_name}" as "{field_name}_{aggregation}"'
