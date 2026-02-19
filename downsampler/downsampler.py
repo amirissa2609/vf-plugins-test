@@ -1038,9 +1038,9 @@ def build_downsample_query(
     tag_filter_clause: str = generate_tag_filter_clause(tag_values)
     
     if has_moving_avg:
-        # For moving averages, we need a different query structure without GROUP BY
-        # We'll use window functions directly on the time-ordered data
+        # For moving averages, use AVG(AVG(...)) with GROUP BY (InfluxDB supports this)
         fields_clause: str = generate_moving_avg_fields_string(fields_list, interval, tags_list, moving_avg_window)
+        group_by_clause: str = generate_group_by_string(tags_list)
         
         query: str = f"""
             SELECT
@@ -1052,6 +1052,8 @@ def build_downsample_query(
             AND 
                 time < '{end_iso}'
             {tag_filter_clause}
+            GROUP BY
+            {group_by_clause}
             ORDER BY time
         """
     else:
