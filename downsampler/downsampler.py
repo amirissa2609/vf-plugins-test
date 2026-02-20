@@ -1026,7 +1026,6 @@ def generate_fields_string(
 def generate_moving_avg_fields_string(
     fields_aggregate_list: List[Tuple[str, str]],
     interval: Tuple,
-    tags_list: List,
     partition_tags: List[str],
     moving_avg_window: Optional[int] = None,
 ):
@@ -1036,8 +1035,7 @@ def generate_moving_avg_fields_string(
     Args:
         fields_aggregate_list (list[tuple[str, str]]): List of tuples containing field names and aggregation functions.
         interval (tuple[int, str]): Tuple of interval magnitude and unit (e.g., (10, 'minutes')).
-        tags_list (list): List of tag names to include in the SELECT output.
-        partition_tags (list[str]): List of tag names to use in PARTITION BY clause for moving averages.
+        partition_tags (list[str]): List of tag names to use in PARTITION BY clause and SELECT output for moving averages.
         moving_avg_window (Optional[int]): Number of rows for moving average window (default: None).
 
     Returns:
@@ -1071,7 +1069,8 @@ def generate_moving_avg_fields_string(
             # For other aggregations in mixed queries, use them as-is (this shouldn't normally happen in pure moving avg queries)
             query += f'\t"{field_name}" as "{field_name}_{aggregation}"'
 
-    for tag in tags_list:
+    # Only include partition_tags in the SELECT output (not all tags)
+    for tag in partition_tags:
         query += f',\n\t"{tag}"'
 
     return query
@@ -1161,7 +1160,7 @@ def build_downsample_query(
         # We'll use window functions directly on the time-ordered data
         # Use partition_tags for PARTITION BY clause (can be empty list for no partitioning)
         partition_tags_to_use = partition_tags if partition_tags is not None else []
-        fields_clause: str = generate_moving_avg_fields_string(fields_list, interval, tags_list, partition_tags_to_use, moving_avg_window)
+        fields_clause: str = generate_moving_avg_fields_string(fields_list, interval, partition_tags_to_use, moving_avg_window)
         
         query: str = f"""
             SELECT
