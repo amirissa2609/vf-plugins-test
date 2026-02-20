@@ -1002,6 +1002,7 @@ def generate_tag_filter_clause(tag_values: Union[Dict, None]):
 
 
 def build_downsample_query(
+    influxdb3_local,
     fields_list: List[Tuple[str, str]],
     measurement: str,
     tags_list: List[str],
@@ -1027,6 +1028,7 @@ def build_downsample_query(
     Returns:
         A complete SQL query string.
     """
+    influxdb3_local.info("Beginning downsample query build")
     # Check if we have moving average calculations
     has_moving_avg = any(agg == 'moving_avg' for _, agg in fields_list)
     
@@ -1073,6 +1075,7 @@ def build_downsample_query(
             {group_by_clause}
         """
     
+    influxdb3_local.info(f"Downsample query: {query}")
     return query
 
 
@@ -1331,6 +1334,7 @@ def process_scheduled_call(
         influxdb3_local.info(f"[{task_id}] Querying data from {real_then} to {real_now}")
 
         query: str = build_downsample_query(
+            influxdb3_local,
             fields,
             source_measurement,
             tags,
@@ -1577,6 +1581,7 @@ def process_request(
             batch_end = min(cursor + batch_delta, backfill_end)
 
             query: str = build_downsample_query(
+                influxdb3_local,
                 fields,
                 source_measurement,
                 tags,
@@ -1589,7 +1594,9 @@ def process_request(
 
             batch_data: List = influxdb3_local.query(query)
             batch_source_count: int = len(batch_data)
+            influxdb3_local.info(f"Batch source count returned from query: {batch_source_count}")
             total_source_records += batch_source_count
+            influxdb3_local.info(f"Total source records: {total_source_records}")
 
             # Log batch source data metrics
             source_columns: List = (
