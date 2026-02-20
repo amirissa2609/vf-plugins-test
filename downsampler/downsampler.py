@@ -45,6 +45,12 @@
             "required": false
         },
         {
+            "name": "partition_by_tags",
+            "example": "az.region",
+            "description": "Dot-separated tag names to use in PARTITION BY clause for moving_avg calculations. Required when using moving_avg. Use 'none' to disable partitioning entirely.",
+            "required": true
+        },
+        {
             "name": "specific_fields",
             "example": "hum.co",
             "description": "Dot-separated field names to downsample (e.g., 'co.temperature').",
@@ -664,6 +670,113 @@ def parse_fields_for_scheduler(
     return valid
 
 
+def parse_partition_by_tags_for_scheduler(
+    influxdb3_local,
+    args: dict,
+    all_tags: list,
+    task_id: str,
+) -> List[str]:
+    """
+    Parses partition_by_tags for scheduler-based requests.
+    Required when using moving_avg calculations.
+
+    Args:
+        influxdb3_local: InfluxDB client instance.
+        args (dict): Dictionary containing the 'partition_by_tags' key.
+        all_tags (list): List of all available tag names in the measurement.
+        task_id (str): The task ID.
+
+    Returns:
+        list[str]: List of valid tag names to use in PARTITION BY clause.
+                   Empty list if 'none' is specified.
+
+    Raises:
+        Exception: If partition_by_tags is missing when moving_avg is used,
+                   or if format is invalid.
+    """
+    partition_tags: Union[str, None] = args.get("partition_by_tags", None)
+    
+    if partition_tags is None:
+        return None  # Will be validated later if moving_avg is used
+    
+    # Handle 'none' to disable partitioning
+    if partition_tags.lower() == "none":
+        return []
+    
+    # Validate format: dot-separated tag names
+    pattern: str = r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9][A-Za-z0-9_-]*)*$"
+    if not re.fullmatch(pattern, partition_tags):
+        raise Exception(f"[{task_id}] Invalid partition_by_tags format: {partition_tags!r}.")
+    
+    requested: List = partition_tags.split(".")
+    valid: List = []
+    
+    for tag in requested:
+        if tag in all_tags:
+            valid.append(tag)
+        else:
+            influxdb3_local.warn(
+                f"[{task_id}] Tag '{tag}' specified in partition_by_tags does not exist in measurement."
+            )
+    
+    return valid
+
+
+def parse_partition_by_tags_for_http(
+    influxdb3_local,
+    args: dict,
+    all_tags: list,
+    task_id: str,
+) -> List[str]:
+    """
+    Parses partition_by_tags for HTTP-based requests.
+    Required when using moving_avg calculations.
+
+    Args:
+        influxdb3_local: InfluxDB client instance.
+        args (dict): Dictionary containing the 'partition_by_tags' key (list or 'none').
+        all_tags (list): List of all available tag names in the measurement.
+        task_id (str): The task ID.
+
+    Returns:
+        list[str]: List of valid tag names to use in PARTITION BY clause.
+                   Empty list if 'none' is specified.
+
+    Raises:
+        Exception: If partition_by_tags is missing when moving_avg is used,
+                   or if format is invalid.
+    """
+    partition_tags: Union[List, str, None] = args.get("partition_by_tags", None)
+    
+    if partition_tags is None:
+        return None  # Will be validated later if moving_avg is used
+    
+    # Handle 'none' string to disable partitioning
+    if isinstance(partition_tags, str):
+        if partition_tags.lower() == "none":
+            return []
+        else:
+            raise Exception(
+                f"[{task_id}] Invalid partition_by_tags format: expected list or 'none', got string '{partition_tags}'."
+            )
+    
+    if not isinstance(partition_tags, list):
+        raise Exception(
+            f"[{task_id}] Invalid partition_by_tags format: expected list or 'none', got {type(partition_tags).__name__}."
+        )
+    
+    valid: List = []
+    for tag in partition_tags:
+        if tag in all_tags:
+            valid.append(tag)
+        else:
+            influxdb3_local.warn(
+                f"[{task_id}] Tag '{tag}' specified in partition_by_tags does not exist in measurement."
+            )
+    
+    return valid
+
+
 def parse_max_retries(args: Dict) -> int:
     """
     Parses the maximum number of retries for write operations.
@@ -914,6 +1027,7 @@ def generate_moving_avg_fields_string(
     fields_aggregate_list: List[Tuple[str, str]],
     interval: Tuple,
     tags_list: List,
+    partition_tags: List[str],
     moving_avg_window: Optional[int] = None,
 ):
     """
@@ -922,7 +1036,8 @@ def generate_moving_avg_fields_string(
     Args:
         fields_aggregate_list (list[tuple[str, str]]): List of tuples containing field names and aggregation functions.
         interval (tuple[int, str]): Tuple of interval magnitude and unit (e.g., (10, 'minutes')).
-        tags_list (list): List of tag names to include in the query.
+        tags_list (list): List of tag names to include in the SELECT output.
+        partition_tags (list[str]): List of tag names to use in PARTITION BY clause for moving averages.
         moving_avg_window (Optional[int]): Number of rows for moving average window (default: None).
 
     Returns:
@@ -945,10 +1060,10 @@ def generate_moving_avg_fields_string(
             if moving_avg_window is None:
                 moving_avg_window = 7  # Default window size
             
-            # Build partition clause with all tags
+            # Build partition clause with specified partition tags only
             partition_clause = ""
-            if tags_list:
-                partition_parts = [f'"{tag}"' for tag in tags_list]
+            if partition_tags:
+                partition_parts = [f'"{tag}"' for tag in partition_tags]
                 partition_clause = f"PARTITION BY {', '.join(partition_parts)} "
             
             query += f'\tAVG("{field_name}") OVER ({partition_clause}ORDER BY time ROWS BETWEEN {moving_avg_window - 1} PRECEDING AND CURRENT ROW) as "{field_name}_moving_avg"'
@@ -1011,6 +1126,7 @@ def build_downsample_query(
     start_time: datetime,
     end_time: datetime,
     moving_avg_window: Optional[int] = None,
+    partition_tags: Optional[List[str]] = None,
 ) -> str:
     """
     Builds a downsampling SQL query for any mode (HTTP or scheduler), given explicit start/end.
@@ -1024,6 +1140,7 @@ def build_downsample_query(
         start_time: UTC datetime for WHERE time > ...
         end_time:   UTC datetime for WHERE time < ...
         moving_avg_window: Number of rows for moving average window (default: None)
+        partition_tags: List of tag names to use in PARTITION BY clause for moving averages (default: None)
 
     Returns:
         A complete SQL query string.
@@ -1042,7 +1159,9 @@ def build_downsample_query(
     if has_moving_avg:
         # For moving averages, we need a different query structure without GROUP BY
         # We'll use window functions directly on the time-ordered data
-        fields_clause: str = generate_moving_avg_fields_string(fields_list, interval, tags_list, moving_avg_window)
+        # Use partition_tags for PARTITION BY clause (can be empty list for no partitioning)
+        partition_tags_to_use = partition_tags if partition_tags is not None else []
+        fields_clause: str = generate_moving_avg_fields_string(fields_list, interval, tags_list, partition_tags_to_use, moving_avg_window)
         
         query: str = f"""
             SELECT
@@ -1327,6 +1446,24 @@ def process_scheduled_call(
                 )
                 moving_avg_window = None
 
+        # Parse partition_by_tags for moving average calculations
+        if args["use_config_file"]:
+            partition_tags: Optional[List[str]] = parse_partition_by_tags_for_http(
+                influxdb3_local, args, all_tags, task_id
+            )
+        else:
+            partition_tags = parse_partition_by_tags_for_scheduler(
+                influxdb3_local, args, all_tags, task_id
+            )
+
+        # Check if moving_avg is used and partition_by_tags is required
+        has_moving_avg = any(agg == 'moving_avg' for _, agg in fields)
+        if has_moving_avg and partition_tags is None:
+            raise Exception(
+                f"[{task_id}] partition_by_tags is required when using moving_avg calculation. "
+                "Specify tag names (e.g., 'az.region') or 'none' to disable partitioning."
+            )
+
         call_time_: datetime = call_time.astimezone(timezone.utc)
 
         real_now: datetime = call_time_ - offset
@@ -1343,6 +1480,7 @@ def process_scheduled_call(
             real_then,
             real_now,
             moving_avg_window,
+            partition_tags,
         )
 
         data: List = influxdb3_local.query(query)
@@ -1542,6 +1680,19 @@ def process_request(
                 )
                 moving_avg_window = None
 
+        # Parse partition_by_tags for moving average calculations
+        partition_tags: Optional[List[str]] = parse_partition_by_tags_for_http(
+            influxdb3_local, data, all_tags, task_id
+        )
+
+        # Check if moving_avg is used and partition_by_tags is required
+        has_moving_avg = any(agg == 'moving_avg' for _, agg in fields)
+        if has_moving_avg and partition_tags is None:
+            raise Exception(
+                f"[{task_id}] partition_by_tags is required when using moving_avg calculation. "
+                "Specify tag names as a list (e.g., ['az', 'region']) or 'none' to disable partitioning."
+            )
+
         if backfill_start is None:
             q: str = f"SELECT MIN(time) as _t FROM {source_measurement}"
             res: List = influxdb3_local.query(q)
@@ -1590,6 +1741,7 @@ def process_request(
                 cursor,
                 batch_end,
                 moving_avg_window,
+                partition_tags,
             )
 
             batch_data: List = influxdb3_local.query(query)

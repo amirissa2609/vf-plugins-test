@@ -10,10 +10,15 @@ The moving average feature calculates rolling averages over a specified window o
 
 - **`calculations`**: Use `"moving_avg"` as the aggregation type
 - **`moving_avg_window`**: Number of data points to include in the rolling window (default: 7)
+- **`partition_by_tags`**: **(Required for moving_avg)** Tags to use in the PARTITION BY clause for window calculations
 - **`interval`**: Time bucket size for grouping data (e.g., "1min", "5min", "1h")
 - **`window`**: Time range to process for scheduled triggers (e.g., "1h", "1d")
 - **`source_measurement`**: Input measurement to process
 - **`target_measurement`**: Output measurement for results
+
+### partition_by_tags Parameter
+
+The `partition_by_tags` parameter controls which tags are used in the SQL `PARTITION BY` clause for moving average calculations. This is **required** when using `moving_avg` and is critical for query performance.
 
 ### Parameter Units Explained
 
@@ -59,6 +64,7 @@ curl -X POST http://localhost:8181/api/v3/engine/moving-avg-test \
     "batch_size": "1h",
     "calculations": [["temperature", "moving_avg"]],
     "moving_avg_window": 3,
+    "partition_by_tags": ["location"],
     "backfill_start": "2024-01-01T00:00:00+00:00",
     "backfill_end": "2024-01-01T00:15:00+00:00"
   }'
@@ -68,6 +74,7 @@ curl -X POST http://localhost:8181/api/v3/engine/moving-avg-test \
 - **`batch_size`**: Processing batch size (e.g., "1h", "1d")
 - **`backfill_start/end`**: Time range to process (ISO 8601 format with timezone)
 - **`calculations`**: List format `[["field_name", "moving_avg"]]`
+- **`partition_by_tags`**: List of tag names for PARTITION BY (e.g., `["location"]`) or `"none"`
 
 ## Scheduled Trigger
 
@@ -91,6 +98,7 @@ curl -X POST "http://localhost:8181/api/v3/configure/processing_engine_trigger" 
       "interval": "1min",
       "window": "1h",
       "moving_avg_window": "3",
+      "partition_by_tags": "location",
       "calculations": "temperature:moving_avg"
     },
     "trigger_settings": {
@@ -104,6 +112,7 @@ curl -X POST "http://localhost:8181/api/v3/configure/processing_engine_trigger" 
 - **`trigger_specification`**: Schedule (e.g., "every:10s", "every:5min", "every:1h")
 - **`window`**: Time window to process each run (e.g., "1h" = last hour)
 - **`calculations`**: String format `"field_name:moving_avg"`
+- **`partition_by_tags`**: Dot-separated tag names for PARTITION BY (e.g., `"location"`) or `"none"`
 
 ## Viewing Results
 
@@ -177,7 +186,9 @@ For a 3-point moving average (`moving_avg_window: 3`):
 |--------|-------------|------------------|
 | **Data Processing** | Historical data with custom time ranges | Recent data within sliding time windows |
 | **Calculations Format** | `[["field", "moving_avg"]]` | `"field:moving_avg"` |
+| **partition_by_tags Format** | List: `["az", "region"]` or `"none"` | Dot-separated: `"az.region"` or `"none"` |
 | **Time Control** | `backfill_start/end` parameters | `window` parameter (e.g., "1h") |
 | **Execution** | On-demand via API calls | Automatic based on schedule |
 | **Use Case** | Bulk historical analysis | Real-time continuous processing |
+
 
