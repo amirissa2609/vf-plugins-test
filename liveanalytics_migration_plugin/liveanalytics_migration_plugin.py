@@ -148,7 +148,7 @@ def process_request(
         )
 
     if "verify" in query_parameters:
-        response = verify_previous_migrations(influxdb3_local, migration_id, db_name)
+        response = verify_previous_migrations(influxdb3_local, migration_id)
         if "delete_cache" in query_parameters:
             deleted_migration_records = influxdb3_local.cache.delete(
                 f"{migration_id}-records"
@@ -203,7 +203,7 @@ def migrate_parquet_file(influxdb3_local, migration_id, db_name, current_parquet
         )
         influxdb3_local.info(f"{migration_id}: Retrieved data from metadata table")
     else:
-        verification = verify_previous_migrations(influxdb3_local, migration_id, db_name)
+        verification = verify_previous_migrations(influxdb3_local, migration_id)
         if (
             verification["status"] != HttpStatus.OK
             and verification["status"] != HttpStatus.ACCEPTED
@@ -290,7 +290,7 @@ def get_migration_metadata(influxdb3_local, migration_id):
         raise Exception(f"{migration_id}: Failed to retrieve migration metadata")
 
 
-def verify_previous_migrations(influxdb3_local, migration_id, db_name=None):
+def verify_previous_migrations(influxdb3_local, migration_id):
     migration_records = influxdb3_local.cache.get(f"{migration_id}-records", default={})
     table_counts = influxdb3_local.cache.get(f"{migration_id}-table-counts", default={})
 
@@ -505,7 +505,7 @@ def put_done_file(influxdb3_local, s3_key: str, presigned_done_url: str):
 
 
 def read_parquet_in_batches(
-    influxdb3_local, presigned_get_url: str, s3_key: str, batch_size: int = 20000
+    influxdb3_local, presigned_get_url: str, s3_key: str, batch_size
 ):
     reader = PresignedRangeReader(presigned_get_url)
     parquet_file = pq.ParquetFile(reader)
@@ -529,7 +529,7 @@ def ingest_parquet_file_in_chunks(
     db_name: str,
     table_name: str,
     s3_key: str,
-    chunk_size: int = 10000,
+    chunk_size: int = 2000,
 ):
     """
     Read parquet file in chunks and format output as requested.
@@ -560,7 +560,7 @@ def ingest_parquet_file_in_chunks(
     max_time_ns = None
 
     # Read the file in batches.
-    for batch in read_parquet_in_batches(influxdb3_local, presigned_get_url, s3_key):
+    for batch in read_parquet_in_batches(influxdb3_local, presigned_get_url, s3_key, chunk_size):
         chunk_number += 1
         batch_schema = batch.schema
         column_types = []
