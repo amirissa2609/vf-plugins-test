@@ -323,54 +323,42 @@ def verify_previous_migrations(influxdb3_local, migration_id, db_name=None):
                 )
             table_name = table_name_parts[1]
             
-            # Get row count and time bounds from cache (stored during ingestion).
-            # This avoids re-reading from S3 and is much more efficient.
+            # Get row count and time bounds from cache stored during previous file ingestion
             current_parquet_row_count = migration_record.get("row_count")
             min_time_ns = migration_record.get("min_time_ns")
             max_time_ns = migration_record.get("max_time_ns")
             
-            # Fallback: if stats not in cache (e.g., migration resumed), read from parquet metadata
             if current_parquet_row_count is None:
-                influxdb3_local.info(
-                    f"{migration_id}: Row count not in cache, reading parquet metadata"
+                error_message = (
+                    f"{migration_id}: Row count not in cache for {parquet_path}. "
+                    f"This file was not properly ingested - cache entry missing row_count."
                 )
-                reader = PresignedRangeReader(migration_record["presigned_get_url"])
-                try:
-                    parquet_file = pq.ParquetFile(reader)
-                    current_parquet_row_count = parquet_file.metadata.num_rows
-                finally:
-                    reader.close()
+                influxdb3_local.error(error_message)
+                return create_http_response(HttpStatus.INTERNAL_ERROR, error_message)
             
-            # Use time-bounded query if we have time bounds from ingestion.
-            # Time-bounded queries are O(log n) with time-based indexing vs O(n) for full scan.
-            if min_time_ns is not None and max_time_ns is not None:
-                # Convert nanoseconds to RFC3339 timestamp for InfluxDB query
-                min_time_str = pandas.Timestamp(min_time_ns, unit='ns').isoformat() + "Z"
-                max_time_str = pandas.Timestamp(max_time_ns, unit='ns').isoformat() + "Z"
+            if min_time_ns is None or max_time_ns is None:
+                error_message = (
+                    f"{migration_id}: Time bounds not in cache for {parquet_path}. "
+                    f"This file was not properly ingested - cache entry missing time bounds."
+                )
+                influxdb3_local.error(error_message)
+                return create_http_response(HttpStatus.INTERNAL_ERROR, error_message)
+            
+            # Convert nanoseconds to RFC3339 timestamp for InfluxDB query
+            min_time_str = pandas.Timestamp(min_time_ns, unit='ns').isoformat() + "Z"
+            max_time_str = pandas.Timestamp(max_time_ns, unit='ns').isoformat() + "Z"
+            
+            row_count_query = (
+                f'SELECT COUNT(*) AS row_count FROM "{table_name}" '
+                f"WHERE time >= '{min_time_str}' AND time <= '{max_time_str}'"
+            )
+            expected_row_count = current_parquet_row_count
+            influxdb3_local.info(
+                f"{migration_id}: Verifying {parquet_path} with time-bounded query "
+                f"(time range: {min_time_str} to {max_time_str}, expected {expected_row_count} rows)"
+            )
                 
-                row_count_query = (
-                    f'SELECT COUNT(*) AS row_count FROM "{table_name}" '
-                    f"WHERE time >= '{min_time_str}' AND time <= '{max_time_str}'"
-                )
-                expected_row_count = current_parquet_row_count
-                influxdb3_local.info(
-                    f"{migration_id}: Using time-bounded verification for {parquet_path} "
-                    f"(time range: {min_time_str} to {max_time_str})"
-                )
-            else:
-                # Fallback to full table count if time bounds not available in parquet statistics.
-                # This may be slower for large tables but ensures correctness.
-                influxdb3_local.info(
-                    f"{migration_id}: Time bounds not available in parquet metadata, "
-                    f"using cumulative table count for {parquet_path}"
-                )
-                table_tally = table_counts.get(table_name, 0)
-                expected_row_count = table_tally + current_parquet_row_count
-                row_count_query = f'SELECT COUNT(*) AS row_count FROM "{table_name}"'
-                
-            # Verify row count with retry logic to handle WAL flush timing.
-            # The WAL flushes every ~1 second, but under heavy load may take longer.
-            # Retry up to 3 times with 5 second waits to allow flush to complete.
+            # Verify row count with retry logic to handle WAL flush timing
             max_verification_attempts = 3
             verification_retry_delay_seconds = 5
             actual_row_count = None
@@ -408,7 +396,6 @@ def verify_previous_migrations(influxdb3_local, migration_id, db_name=None):
                     )
                     time.sleep(verification_retry_delay_seconds)
             
-            # Fail only if actual count is less than expected (data is missing)
             if actual_row_count < expected_row_count:
                 error_message = f"{migration_id}: Migration failed for Parquet file {parquet_path}: expected at least {expected_row_count} rows, got {actual_row_count} rows (after {max_verification_attempts} attempts)"
                 influxdb3_local.error(error_message)
@@ -716,5 +703,4 @@ def parse_arg(influxdb3_local, arg_key, args):
     error_message = f"{arg_key} not supplied in args"
     influxdb3_local.error(error_message)
     raise RuntimeError(error_message)
-
 
