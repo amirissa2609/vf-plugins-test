@@ -12,9 +12,10 @@ import requests
 
 
 METADATA_TABLE_NAME = "liveanalytics_migration_metadata"
+STATUS_TABLE_NAME = "liveanalytics_migration_status"
 MIGRATION_PENDING = "pending"
-MIGRATION_IN_PROGRESS = "in progress"
-MIGRATION_NEEDS_VERIFICATION = "needs verification"
+MIGRATION_IN_PROGRESS = "in_progress"
+MIGRATION_NEEDS_VERIFICATION = "needs_verification"
 MIGRATION_COMPLETED = "completed"
 MIGRATION_FAILED = "failed"
 
@@ -148,7 +149,7 @@ def process_request(
         )
 
     if "verify" in query_parameters:
-        response = verify_previous_migrations(influxdb3_local, migration_id)
+        response = verify_previous_migrations(influxdb3_local, migration_id, db_name)
         if "delete_cache" in query_parameters:
             deleted_migration_records = influxdb3_local.cache.delete(
                 f"{migration_id}-records"
@@ -203,7 +204,7 @@ def migrate_parquet_file(influxdb3_local, migration_id, db_name, current_parquet
         )
         influxdb3_local.info(f"{migration_id}: Retrieved data from metadata table")
     else:
-        verification = verify_previous_migrations(influxdb3_local, migration_id)
+        verification = verify_previous_migrations(influxdb3_local, migration_id, db_name)
         if (
             verification["status"] != HttpStatus.OK
             and verification["status"] != HttpStatus.ACCEPTED
@@ -249,6 +250,16 @@ def migrate_parquet_file(influxdb3_local, migration_id, db_name, current_parquet
             HttpStatus.INTERNAL_ERROR, f"{migration_id}: Migration failed: {str(e)}"
         )
 
+    # Write status to status table for client polling
+    write_migration_status(
+        influxdb3_local,
+        migration_id,
+        db_name,
+        current_parquet_path,
+        MIGRATION_NEEDS_VERIFICATION,
+        ingestion_stats["row_count"]
+    )
+    
     return create_http_response(HttpStatus.ACCEPTED, "Request processed")
 
 
@@ -290,7 +301,7 @@ def get_migration_metadata(influxdb3_local, migration_id):
         raise Exception(f"{migration_id}: Failed to retrieve migration metadata")
 
 
-def verify_previous_migrations(influxdb3_local, migration_id):
+def verify_previous_migrations(influxdb3_local, migration_id, db_name=None):
     migration_records = influxdb3_local.cache.get(f"{migration_id}-records", default={})
     table_counts = influxdb3_local.cache.get(f"{migration_id}-table-counts", default={})
 
@@ -419,6 +430,16 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                     value=migration_records,
                     ttl=CACHE_PUT_TTL_SECONDS,
                 )
+                # Update status table to failed
+                write_migration_status(
+                    influxdb3_local,
+                    migration_id,
+                    db_name,
+                    parquet_path,
+                    MIGRATION_FAILED,
+                    0,
+                    error_message
+                )
                 return create_http_response(HttpStatus.INTERNAL_ERROR, error_message)
             else:
                 migration_record["status"] = MIGRATION_COMPLETED
@@ -440,6 +461,15 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                     influxdb3_local,
                     parquet_path,
                     migration_record["presigned_done_url"],
+                )
+                # Update status table to completed
+                write_migration_status(
+                    influxdb3_local,
+                    migration_id,
+                    db_name,
+                    parquet_path,
+                    MIGRATION_COMPLETED,
+                    current_parquet_row_count
                 )
                 influxdb3_local.info(
                     f"{migration_id}: Migration complete and verified for Parquet file {parquet_path}"
@@ -707,6 +737,61 @@ def transform_row_to_lp(influxdb3_local, row, table_name, column_types):
             )
 
     return builder
+
+
+def write_migration_status(
+    influxdb3_local,
+    migration_id: str,
+    db_name: str,
+    s3_key: str,
+    status: str,
+    row_count: int = 0,
+    error_message: str = ""
+):
+    """
+    Writes migration status to the status table for client polling.
+
+    Args:
+        influxdb3_local: InfluxDB v3 local client.
+        migration_id (str): Migration ID.
+        db_name (str): Database name.
+        s3_key (str): S3 key of the parquet file.
+        status (str): Migration status (pending, in_progress, completed, failed).
+        row_count (int): Number of rows migrated.
+        error_message (str): Error message if failed.
+    """
+    try:
+        # Extract table name from s3_key (database/table/results/...)
+        table_name = s3_key.split("/")[1] if len(s3_key.split("/")) >= 2 else "unknown"
+        
+        # Build line protocol - escape special chars in tag values
+        escaped_s3_key = s3_key.replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
+        escaped_table = table_name.replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
+        escaped_error = error_message.replace('"', '\\"').replace("\n", "\\n")
+        
+        line = (
+            f'{STATUS_TABLE_NAME},'
+            f'migration_id={migration_id},'
+            f's3_key={escaped_s3_key},'
+            f'table_name={escaped_table} '
+            f'status="{status}",'
+            f'row_count={row_count}i,'
+            f'error_message="{escaped_error}"'
+        )
+        
+        builder = LineBuilder(STATUS_TABLE_NAME)
+        builder.tag("migration_id", migration_id)
+        builder.tag("s3_key", s3_key)
+        builder.tag("table_name", table_name)
+        builder.string_field("status", status)
+        builder.int64_field("row_count", row_count)
+        builder.string_field("error_message", error_message)
+        
+        influxdb3_local.write_to_db(db_name, builder)
+        influxdb3_local.info(f"Wrote status for {s3_key}: {status}")
+        
+    except Exception as e:
+        influxdb3_local.error(f"Failed to write migration status: {e}")
 
 
 def parse_arg(influxdb3_local, arg_key, args):
