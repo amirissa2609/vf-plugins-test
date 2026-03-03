@@ -105,15 +105,17 @@ class PresignedRangeReader(io.RawIOBase):
         return self.pos
 
 
-def create_http_response(status: HttpStatus, message: str, table_row_counts: dict = None):
+def create_http_response(
+    status: HttpStatus, message: str, table_row_counts: dict = None
+):
     """
     Creates an HTTP response with sanitized message.
-    
+
     Args:
         status (HttpStatus): HTTP status code.
         message (str): Response message.
         table_row_counts (dict, optional): Dict mapping table names to expected cumulative row counts.
-    
+
     Returns:
         dict: Response with status, message, and optional table row counts.
     """
@@ -122,11 +124,11 @@ def create_http_response(status: HttpStatus, message: str, table_row_counts: dic
     sanitized_message = re.sub(presigned_url_regex, "*****", message)
     sanitized_message = re.sub(token_regex, "*****", sanitized_message)
     response = {"status": status, "message": sanitized_message}
-    
+
     # Include table row counts if provided (for client to verify at end of migration)
     if table_row_counts is not None:
         response["table_row_counts"] = table_row_counts
-    
+
     return response
 
 
@@ -151,7 +153,7 @@ def process_request(
         response = verify_previous_migrations(influxdb3_local, migration_id)
         if "delete_cache" in query_parameters:
             deleted_migration_records = influxdb3_local.cache.delete(
-                f"{migration_id}-records"
+                "migration-records"
             )
             if deleted_migration_records:
                 influxdb3_local.info("Deleted migration records from in-memory cache")
@@ -160,7 +162,7 @@ def process_request(
                     "Failed to delete migration records from in-memory cache"
                 )
             deleted_table_counts = influxdb3_local.cache.delete(
-                f"{migration_id}-table-counts"
+                "migration-table-counts"
             )
             if deleted_table_counts:
                 influxdb3_local.info("Deleted table counts from in-memmory cache")
@@ -187,7 +189,7 @@ def migrate_parquet_file(influxdb3_local, migration_id, db_name, current_parquet
             HttpStatus.INVALID_REQUEST, "Invalid body, Parquet path is missing"
         )
 
-    migration_records = influxdb3_local.cache.get(f"{migration_id}-records", default={})
+    migration_records = influxdb3_local.cache.get("migration-records", default={})
 
     # Shared migration_records dict has not been populated. We will assume this is the
     # first invocation and populate it from the metadata table. The metadata table only exists for an hour.
@@ -197,7 +199,7 @@ def migrate_parquet_file(influxdb3_local, migration_id, db_name, current_parquet
         except Exception as e:
             return create_http_response(HttpStatus.INTERNAL_ERROR, str(e))
         influxdb3_local.cache.put(
-            key=f"{migration_id}-records",
+            key="migration-records",
             value=migration_records,
             ttl=CACHE_PUT_TTL_SECONDS,
         )
@@ -231,13 +233,18 @@ def migrate_parquet_file(influxdb3_local, migration_id, db_name, current_parquet
             parquet_path=current_parquet_path,
         )
         migration_records[current_parquet_path]["status"] = MIGRATION_NEEDS_VERIFICATION
-        # Store ingestion stats (row count and time bounds) for efficient verification later
-        # This avoids having to re-read the parquet file from S3 during verification
-        migration_records[current_parquet_path]["row_count"] = ingestion_stats["row_count"]
-        migration_records[current_parquet_path]["min_time_ns"] = ingestion_stats["min_time_ns"]
-        migration_records[current_parquet_path]["max_time_ns"] = ingestion_stats["max_time_ns"]
+        # Store ingestion stats (row count and time bounds) for row count verification
+        migration_records[current_parquet_path]["row_count"] = ingestion_stats[
+            "row_count"
+        ]
+        migration_records[current_parquet_path]["min_time_ns"] = ingestion_stats[
+            "min_time_ns"
+        ]
+        migration_records[current_parquet_path]["max_time_ns"] = ingestion_stats[
+            "max_time_ns"
+        ]
         influxdb3_local.cache.put(
-            key=f"{migration_id}-records",
+            key="migration-records",
             value=migration_records,
             ttl=CACHE_PUT_TTL_SECONDS,
         )
@@ -291,8 +298,8 @@ def get_migration_metadata(influxdb3_local, migration_id):
 
 
 def verify_previous_migrations(influxdb3_local, migration_id):
-    migration_records = influxdb3_local.cache.get(f"{migration_id}-records", default={})
-    table_counts = influxdb3_local.cache.get(f"{migration_id}-table-counts", default={})
+    migration_records = influxdb3_local.cache.get("migration-records", default={})
+    table_counts = influxdb3_local.cache.get("migration-table-counts", default={})
 
     # Since influxdb3_local.write_to_db() writes to a buffer that is later ingested, each invocation must
     # verify the previous invocation's migration.
@@ -322,12 +329,12 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                     "Parquet file path was incorrectly formatted. Path should start wtih database-name/table-name",
                 )
             table_name = table_name_parts[1]
-            
+
             # Get row count and time bounds from cache stored during previous file ingestion
             current_parquet_row_count = migration_record.get("row_count")
             min_time_ns = migration_record.get("min_time_ns")
             max_time_ns = migration_record.get("max_time_ns")
-            
+
             if current_parquet_row_count is None:
                 error_message = (
                     f"{migration_id}: Row count not in cache for {parquet_path}. "
@@ -335,7 +342,7 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                 )
                 influxdb3_local.error(error_message)
                 return create_http_response(HttpStatus.INTERNAL_ERROR, error_message)
-            
+
             if min_time_ns is None or max_time_ns is None:
                 error_message = (
                     f"{migration_id}: Time bounds not in cache for {parquet_path}. "
@@ -343,11 +350,11 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                 )
                 influxdb3_local.error(error_message)
                 return create_http_response(HttpStatus.INTERNAL_ERROR, error_message)
-            
+
             # Convert nanoseconds to RFC3339 timestamp for InfluxDB query
-            min_time_str = pandas.Timestamp(min_time_ns, unit='ns').isoformat() + "Z"
-            max_time_str = pandas.Timestamp(max_time_ns, unit='ns').isoformat() + "Z"
-            
+            min_time_str = pandas.Timestamp(min_time_ns, unit="ns").isoformat() + "Z"
+            max_time_str = pandas.Timestamp(max_time_ns, unit="ns").isoformat() + "Z"
+
             row_count_query = (
                 f'SELECT COUNT(*) AS row_count FROM "{table_name}" '
                 f"WHERE time >= '{min_time_str}' AND time <= '{max_time_str}'"
@@ -357,26 +364,28 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                 f"{migration_id}: Verifying {parquet_path} with time-bounded query "
                 f"(time range: {min_time_str} to {max_time_str}, expected {expected_row_count} rows)"
             )
-                
+
             # Verify row count with retry logic to handle WAL flush timing
             max_verification_attempts = 3
             verification_retry_delay_seconds = 5
             actual_row_count = None
-            
+
             for attempt in range(max_verification_attempts):
                 query_response = influxdb3_local.query(row_count_query)
 
                 if not query_response:
                     error_message = f"{migration_id}: Unable to verify record count for table {table_name} from Parquet file {parquet_path}"
                     influxdb3_local.error(error_message)
-                    return create_http_response(HttpStatus.INTERNAL_ERROR, error_message)
+                    return create_http_response(
+                        HttpStatus.INTERNAL_ERROR, error_message
+                    )
 
                 actual_row_count = query_response[0]["row_count"]
-                
+
                 # For time-bounded queries: actual >= expected is success
-                # because other parquet files may have overlapping time ranges.
-                # Timestream UNLOAD doesn't guarantee non-overlapping timestamps.
-                # Only fail if actual < expected (data is missing).
+                # because other parquet files may have overlapping time ranges
+                # Timestream UNLOAD doesn't guarantee non-overlapping timestamps
+                # Only fail if actual < expected and data is missing
                 if actual_row_count >= expected_row_count:
                     # Verification passed
                     if actual_row_count > expected_row_count:
@@ -395,7 +404,7 @@ def verify_previous_migrations(influxdb3_local, migration_id):
                         f"(attempt {attempt + 1}/{max_verification_attempts})"
                     )
                     time.sleep(verification_retry_delay_seconds)
-            
+
             if actual_row_count < expected_row_count:
                 error_message = f"{migration_id}: Migration failed for Parquet file {parquet_path}: expected at least {expected_row_count} rows, got {actual_row_count} rows (after {max_verification_attempts} attempts)"
                 influxdb3_local.error(error_message)
@@ -410,7 +419,6 @@ def verify_previous_migrations(influxdb3_local, migration_id):
             else:
                 migration_record["status"] = MIGRATION_COMPLETED
                 migration_records[parquet_path] = migration_record
-                # Update cumulative table count for potential fallback scenarios
                 table_tally = table_counts.get(table_name, 0)
                 table_counts[table_name] = table_tally + current_parquet_row_count
                 influxdb3_local.cache.put(
@@ -438,7 +446,9 @@ def verify_previous_migrations(influxdb3_local, migration_id):
         success_message = f"{migration_id}: All Parquet files migrated"
         influxdb3_local.info(success_message)
         # Return final table row counts for client to verify against InfluxDB
-        return create_http_response(HttpStatus.OK, success_message, table_row_counts=table_counts)
+        return create_http_response(
+            HttpStatus.OK, success_message, table_row_counts=table_counts
+        )
     return create_http_response(
         HttpStatus.ACCEPTED,
         "Verified outstanding migrations. Migrations are still in progress or pending verification",
@@ -451,14 +461,14 @@ def write_to_ingestion_buffer(
 ):
     """
     Writes parquet data to the InfluxDB ingestion buffer.
-    
+
     Args:
         influxdb3_local: InfluxDB v3 local client.
         migration_id (str): The migration ID.
         db_name (str): Database name.
         presigned_get_url (str): Pre-signed GET URL for the Parquet file.
         parquet_path (str): S3 path to the parquet file.
-        
+
     Returns:
         dict: Ingestion statistics including row_count, min_time_ns, max_time_ns
     """
@@ -554,13 +564,14 @@ def ingest_parquet_file_in_chunks(
     records_processed = 0
     chunk_number = 0
     processing_start_time = time.time()
-    
-    # Track time bounds during ingestion for efficient verification later
+
     min_time_ns = None
     max_time_ns = None
 
     # Read the file in batches.
-    for batch in read_parquet_in_batches(influxdb3_local, presigned_get_url, s3_key, chunk_size):
+    for batch in read_parquet_in_batches(
+        influxdb3_local, presigned_get_url, s3_key, chunk_size
+    ):
         chunk_number += 1
         batch_schema = batch.schema
         column_types = []
@@ -575,9 +586,9 @@ def ingest_parquet_file_in_chunks(
                 column_types.append(("skip", field.name))
             if field.name.lower() == "time":
                 time_col_idx = idx
-        
+
         df_chunk = batch.to_pandas(types_mapper={pa.int64(): pandas.Int64Dtype()}.get)
-        
+
         # Track min/max time from this batch for verification
         if time_col_idx is not None and "time" in df_chunk.columns:
             batch_min = df_chunk["time"].min()
@@ -626,8 +637,7 @@ def ingest_parquet_file_in_chunks(
     influxdb3_local.info(
         f"Processing rate: {records_processed / processing_time:.0f} records/second"
     )
-    
-    # Return stats for verification
+
     return {
         "row_count": records_processed,
         "min_time_ns": min_time_ns,
@@ -703,4 +713,3 @@ def parse_arg(influxdb3_local, arg_key, args):
     error_message = f"{arg_key} not supplied in args"
     influxdb3_local.error(error_message)
     raise RuntimeError(error_message)
-
