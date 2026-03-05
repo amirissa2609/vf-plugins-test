@@ -1509,58 +1509,51 @@ def process_scheduled_call(
 
         # Log transformed data metrics
         transformed_record_count: int = len(transformed_data)
-        field_counts: dict = {}
-        tag_counts: dict = {}
 
-        # Sample the first record to get field and tag names
-        # In both process_scheduled_call and process_request, replace the field_names and tag_names extraction:
-        if transformed_record_count > 0:
-            sample_record = transformed_data[0]
-
-        # Instead of accessing .key which might not exist on these objects
-        try:
-            # Try different ways to access field names based on LineBuilder implementation
-            if hasattr(sample_record, "fields"):
-                if isinstance(sample_record.fields, dict):
-                    field_names: List = list(sample_record.fields.keys())
-                elif hasattr(sample_record.fields, "__iter__") and all(
-                    hasattr(f, "key") for f in sample_record.fields
-                ):
-                    field_names = [field.key for field in sample_record.fields]
-                else:
-                    field_names = ["<field details unavailable>"]
-            else:
-                field_names = []
-
-            # Do the same for tags
-            if hasattr(sample_record, "tags") and sample_record.tags:
-                if isinstance(sample_record.tags, dict):
-                    tag_names: List = list(sample_record.tags.keys())
-                elif hasattr(sample_record.tags, "__iter__") and all(
-                    hasattr(t, "key") for t in sample_record.tags
-                ):
-                    tag_names = [tag.key for tag in sample_record.tags]
-                else:
-                    tag_names = ["<tag details unavailable>"]
-            else:
-                tag_names = []
-        except Exception:
-            # Fallback in case we can't determine details
-            field_names = ["<field extraction error>"]
-            tag_names = ["<tag extraction error>"]
-
-        # Define transform_data_log variable after field extraction
+        # Define transform_data_log variable
         transform_data_log: dict = {
             "source_records": source_record_count,
             "transformed_records": transformed_record_count,
             "target_measurement": target_measurement,
             "time_range": f"{real_then.isoformat()} to {real_now.isoformat()}",
         }
-        # You can optionally add field info if available
-        if transformed_record_count > 0 and "field_names" in locals():
-            transform_data_log["field_names"] = field_names
-            if "tag_names" in locals():
+
+        # Sample the first record to get field and tag names (only if we have data)
+        if transformed_record_count > 0:
+            sample_record = transformed_data[0]
+            try:
+                # Try different ways to access field names based on LineBuilder implementation
+                if hasattr(sample_record, "fields"):
+                    if isinstance(sample_record.fields, dict):
+                        field_names: List = list(sample_record.fields.keys())
+                    elif hasattr(sample_record.fields, "__iter__") and all(
+                        hasattr(f, "key") for f in sample_record.fields
+                    ):
+                        field_names = [field.key for field in sample_record.fields]
+                    else:
+                        field_names = ["<field details unavailable>"]
+                else:
+                    field_names = []
+
+                # Do the same for tags
+                if hasattr(sample_record, "tags") and sample_record.tags:
+                    if isinstance(sample_record.tags, dict):
+                        tag_names: List = list(sample_record.tags.keys())
+                    elif hasattr(sample_record.tags, "__iter__") and all(
+                        hasattr(t, "key") for t in sample_record.tags
+                    ):
+                        tag_names = [tag.key for tag in sample_record.tags]
+                    else:
+                        tag_names = ["<tag details unavailable>"]
+                else:
+                    tag_names = []
+
+                transform_data_log["field_names"] = field_names
                 transform_data_log["tag_names"] = tag_names
+            except Exception:
+                # Fallback in case we can't determine details
+                transform_data_log["field_names"] = ["<field extraction error>"]
+                transform_data_log["tag_names"] = ["<tag extraction error>"]
 
         influxdb3_local.info(
             f"[{task_id}] Data transformation complete", transform_data_log
@@ -1676,7 +1669,7 @@ def process_request(
                     raise ValueError("moving_avg_window must be >= 1")
             except (ValueError, TypeError) as e:
                 influxdb3_local.warn(
-                    f"[{task_id}] Invalid moving_avg_window value: {data.get('moving_avg_window')}. using default."
+                    f"[{task_id}] Invalid moving_avg_window value: {data.get('moving_avg_window')}. Using default."
                 )
                 moving_avg_window = None
 
