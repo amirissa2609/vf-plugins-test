@@ -136,6 +136,7 @@ def parse_time_interval(
     """
     unit_mapping: Dict = {
         "s": "seconds",
+        "sec": "seconds",
         "min": "minutes",
         "h": "hours",
         "d": "days",
@@ -1675,7 +1676,7 @@ def process_request(
                     raise ValueError("moving_avg_window must be >= 1")
             except (ValueError, TypeError) as e:
                 influxdb3_local.warn(
-                    f"[{task_id}] Invalid moving_avg_window value: {data.get('moving_avg_window')}. using default."
+                    f"[{task_id}] Invalid moving_avg_window value: {data.get('moving_avg_window')}. Using default."
                 )
                 moving_avg_window = None
 
