@@ -219,6 +219,7 @@ def parse_excluded_fields_for_http(
 ) -> List[str]:
     """
     Parses excluded_fields for HTTP-based requests, handling both fields and tags.
+    Supports wildcard '*' to exclude all tags.
 
     Args:
         influxdb3_local: InfluxDB client instance.
@@ -230,11 +231,23 @@ def parse_excluded_fields_for_http(
     Returns:
         list[str]: List of valid field/tag names to exclude.
     """
-    fields: Union[list, None] = args.get("excluded_fields", None)
+    fields: Union[list, str, None] = args.get("excluded_fields", None)
     result_fields: list = []
-    if fields is not None:
+    
+    if fields is None:
+        return result_fields
+    
+    # Handle wildcard '*' - exclude all tags
+    if fields == "*" or fields == ["*"]:
+        return list(tag_names)
+    
+    # Handle list of fields/tags
+    if isinstance(fields, list):
         for item in fields:
-            if item in aggregatable_fields:
+            if item == "*":
+                # Wildcard in list - add all tags
+                result_fields.extend(tag_names)
+            elif item in aggregatable_fields:
                 result_fields.append(item)
             elif item in tag_names:
                 result_fields.append(item)
@@ -242,7 +255,8 @@ def parse_excluded_fields_for_http(
                 influxdb3_local.info(
                     f"[{task_id}] Field/tag '{item}' is not available in measurement."
                 )
-    return result_fields
+    
+    return list(set(result_fields))  # Remove duplicates
 
 
 def parse_fields_for_http(
@@ -975,6 +989,7 @@ def generate_fields_string(
     interval: Tuple,
     tags_list: List,
     moving_avg_window: Optional[int] = None,
+    include_metadata: bool = True,
 ):
     """
     Generates the SELECT clause for downsampling.
@@ -984,16 +999,18 @@ def generate_fields_string(
         interval (tuple[int, str]): Tuple of interval magnitude and unit (e.g., (10, 'minutes')).
         tags_list (list): List of tag names to include in the query.
         moving_avg_window (Optional[int]): Number of rows for moving average window (default: None).
+        include_metadata (bool): If True, includes record_count, time_from, time_to. Default: True.
 
     Returns:
-        str: SQL SELECT clause string including DATE_BIN, aggregations, time_from, time_to, and tags.
+        str: SQL SELECT clause string including DATE_BIN, aggregations, and optionally time_from, time_to, and tags.
     """
-    query: str = (
-        f"DATE_BIN(INTERVAL '{interval[0]} {interval[1]}', time, '1970-01-01T00:00:00Z') AS _time,\n \
+    query: str = f"DATE_BIN(INTERVAL '{interval[0]} {interval[1]}', time, '1970-01-01T00:00:00Z') AS _time"
+    
+    if include_metadata:
+        query += ",\n \
     \tcount(*) AS record_count,\n \
     \tMIN(time) AS time_from,\n \
     \tMAX(time) AS time_to"
-    )
 
     for field in fields_aggregate_list:
         query += ",\n"
@@ -1127,6 +1144,7 @@ def build_downsample_query(
     end_time: datetime,
     moving_avg_window: Optional[int] = None,
     partition_tags: Optional[List[str]] = None,
+    include_metadata: bool = True,
 ) -> str:
     """
     Builds a downsampling SQL query for any mode (HTTP or scheduler), given explicit start/end.
@@ -1177,7 +1195,7 @@ def build_downsample_query(
         """
     else:
         # Standard aggregation query with GROUP BY
-        fields_clause: str = generate_fields_string(fields_list, interval, tags_list, moving_avg_window)
+        fields_clause: str = generate_fields_string(fields_list, interval, tags_list, moving_avg_window, include_metadata)
         group_by_clause: str = generate_group_by_string(tags_list)
         
         query: str = f"""
@@ -1678,6 +1696,9 @@ def process_request(
             influxdb3_local, data, all_tags, task_id
         )
 
+        # Parse include_metadata (default: True for backward compatibility)
+        include_metadata: bool = data.get("include_metadata", True)
+
         # Check if moving_avg is used and partition_by_tags is required
         has_moving_avg = any(agg == 'moving_avg' for _, agg in fields)
         if has_moving_avg and partition_tags is None:
@@ -1735,6 +1756,7 @@ def process_request(
                 batch_end,
                 moving_avg_window,
                 partition_tags,
+                include_metadata,
             )
 
             batch_data: List = influxdb3_local.query(query)
